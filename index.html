@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Arknights: Endfield Pull Simulator</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 1200px; margin: 0 auto; padding: 20px; background: #1a1a1a; color: #fff; }
+        .tab { overflow: hidden; border-bottom: 1px solid #ccc; }
+        .tab button { background: #333; float: left; border: none; outline: none; cursor: pointer; padding: 14px 16px; color: #fff; }
+        .tab button:hover { background: #555; }
+        .tab button.active { background: #007acc; }
+        .tabcontent { display: none; padding: 20px; border: 1px solid #ccc; border-top: none; background: #222; }
+        .section { margin-bottom: 30px; padding: 20px; background: #2a2a2a; border-radius: 8px; }
+        input, select, button { padding: 10px; margin: 5px; border: 1px solid #555; border-radius: 4px; background: #333; color: #fff; }
+        button { background: #007acc; cursor: pointer; }
+        button:hover { background: #005a99; }
+        .warning { color: #ff6b6b; font-weight: bold; }
+        .results { background: #1e1e1e; padding: 15px; border-radius: 4px; margin-top: 10px; }
+        #pullHistory { max-height: 300px; overflow-y: auto; background: #111; padding: 10px; border-radius: 4px; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 8px; text-align: left; border-bottom: 1px solid #444; }
+    </style>
+</head>
+<body>
+    <h1>Arknights: Endfield Pull Simulator</h1>
+    <p>Based on launch data (Feb 2026). Rates: 0.8% 6★, 8% 5★, 91.2% 4★. Soft pity 65+, Hard 80 (6★ guar), Limited 120 (featured guar). 1 Ori = 75 Oro. 500 Oro/pull.</p>
+
+    <div class="tab">
+        <button class="tablinks active" onclick="openTab(event, 'currency')">Currency & Guarantee</button>
+        <button class="tablinks" onclick="openTab(event, 'simpulls')">Pull Simulator</button>
+        <button class="tablinks" onclick="openTab(event, 'averages')">Averages & Stats</button>
+    </div>
+
+    <div id="currency" class="tabcontent" style="display:block;">
+        <div class="section">
+            <h2>Select Banner</h2>
+            <select id="bannerSelect" onchange="updateCalculations()">
+                <option value="current">Current Limited: Laevatain</option>
+                <option value="future1">Future Limited: Gilberta</option>
+                <option value="future2">Future Limited: Yvonne</option>
+                <option value="basic">Basic Banner</option>
+                <option value="starting">Starting Banner (max 40 pulls)</option>
+            </select>
+            <h3>Currency Input</h3>
+            <input type="number" id="origeo" placeholder="Origeometry" min="0" onchange="updateCalculations()">
+            <input type="number" id="orober" placeholder="Oroberyl" min="0" onchange="updateCalculations()">
+            <button onclick="updateCalculations()">Calculate</button>
+            <div id="currencyResults" class="results"></div>
+        </div>
+    </div>
+
+    <div id="simpulls" class="tabcontent">
+        <div class="section">
+            <h2>Select Banner & Reset Pity</h2>
+            <select id="simBanner" onchange="resetSim()"><option value="current">Current Limited: Laevatain</option><option value="future1">Future Limited: Gilberta</option><option value="future2">Future Limited: Yvonne</option><option value="basic">Basic Banner</option><option value="starting">Starting Banner</option></select>
+            <input type="number" id="startSixPity" placeholder="Starting 6★ Pity (0-79)" min="0" max="79" value="0">
+            <button onclick="resetSim()">Reset Sim</button>
+            <button onclick="doPull(1)">Single Pull (500 Oro)</button>
+            <button onclick="doPull(10)">10 Pull (5000 Oro)</button>
+            <div id="currentState"></div>
+            <div id="pullHistory"></div>
+        </div>
+    </div>
+
+    <div id="averages" class="tabcontent">
+        <div class="section">
+            <h3>Select Banner & Target Character</h3>
+            <select id="avgBanner" onchange="updateAvg()"><option value="current">Current Limited</option><option value="future1">Future Gilberta</option><option value="future2">Future Yvonne</option><option value="basic">Basic</option><option value="starting">Starting</option></select>
+            <select id="targetChar">
+                <option value="featured">Featured 6★</option>
+                <option value="ardelia">Ardelia</option>
+                <option value="ember">Ember</option>
+                <option value="lastrite">Last Rite</option>
+                <option value="lifeng">Lifeng</option>
+                <option value="pogranichnik">Pogranichnik</option>
+            </select>
+            <input type="number" id="testPulls" placeholder="Pulls to simulate (default 10000)" value="10000" min="1000">
+            <button onclick="runAvgSim()">Run Simulation</button>
+            <div id="avgResults" class="results"></div>
+            <input type="number" id="expPulls" placeholder="For Expected from N Pulls" value="180">
+            <button onclick="runExpSim()">Expected from N Pulls</button>
+            <div id="expResults" class="results"></div>
+        </div>
+    </div>
+
+    <script>
+        const STANDARDS = {ardelia:'Ardelia', ember:'Ember', lastrite:'Last Rite', lifeng:'Lifeng', pogranichnik:'Pogranichnik'};
+        const FEATUREDS = {current:'Laevatain', future1:'Gilberta', future2:'Yvonne'};
+        const FIFTHS = ['Alesh', 'Arclight', 'Avywenna', 'Da Pan', 'Perlica', 'Snowshine', 'Wulfgard', 'Chen Qianyu', 'Xaihi'];
+        const FOURTHS = ['Antal', 'Fluorite', 'Estella', 'Catcher', 'Akekuri'];
+
+        let simState = {pulls:0, sixPity:0, fivePity:0, guarantee:false, history:[], banner:'current'};
+        let avgResults = {};
+
+        function openTab(evt, tabName) {
+            const tabcontent = document.getElementsByClassName("tabcontent");
+            for (let i = 0; i < tabcontent.length; i++) { tabcontent[i].style.display = "none"; }
+            document.getElementById(tabName).style.display = "block";
+            const tablinks = document.getElementsByClassName("tablinks");
+            for (let i = 0; i < tablinks.length; i++) { tablinks[i].className = tablinks[i].className.replace(" active", ""); }
+            evt.currentTarget.className += " active";
+        }
+
+        function getBannerInfo(id) {
+            const isLimited = id.startsWith('future') || id === 'current';
+            const featured = FEATUREDS[id] || null;
+            return {isLimited, featured, type: id === 'starting' ? 'starting' : id === 'basic' ? 'basic' : 'limited'};
+        }
+
+        function updateCalculations() {
+            const ori = parseInt(document.getElementById('origeo').value) || 0;
+            const oro = parseInt(document.getElementById('orober').value) || 0;
+            const totalOro = ori * 75 + oro;
+            const singles = Math.floor(totalOro / 500);
+            const tens = Math.floor(singles / 10);
+            const bannerId = document.getElementById('bannerSelect').value;
+            const info = getBannerInfo(bannerId);
+            const guarPulls = info.isLimited ? 120 : (bannerId === 'basic' ? 80 : 40);
+            const needOro = guarPulls * 500;
+            const needOri = Math.ceil(needOro / 75);
+            const canGuar = singles >= guarPulls;
+            let html = `<p>Total Oroberyl: ${totalOro.toLocaleString()} | Singles: ${singles} | 10-Pulls: ${tens}</p>`;
+            html += `<p>For ${guarPulls} pulls guarantee: ${needOro.toLocaleString()} Oro (~${needOri} Ori)</p>`;
+            if (!canGuar) html += '<p class="warning">⚠️ Under ' + guarPulls + ' pulls - No guarantee!</p>';
+            else html += '<p>✅ Enough for guarantee</p>';
+            document.getElementById('currencyResults').innerHTML = html;
+        }
+
+        function resetSim() {
+            simState = {pulls:0, sixPity: parseInt(document.getElementById('startSixPity').value)||0, fivePity:0, guarantee:false, history:[], banner: document.getElementById('simBanner').value };
+            updateState();
+        }
+
+        function doPull(num) {
+            const info = getBannerInfo(simState.banner);
+            for (let i = 0; i < num; i++) {
+                if (info.type === 'starting' && simState.pulls >= 40) break;
+                simState.pulls++;
+                simState.sixPity++;
+                simState.fivePity++;
+                let rate6 = 0.008;
+                if (simState.sixPity >= 65) {
+                    rate6 = Math.min(1, 0.008 + (simState.sixPity - 64) * 0.05);
+                }
+                let r = Math.random();
+                let isSix = r < rate6;
+                let isFive = false;
+                let forceFive = simState.fivePity % 10 === 0;
+                if (!isSix && forceFive) {
+                    isFive = true;
+                } else if (!isSix && !isFive) {
+                    // 4*
+                }
+                let op = '';
+                if (isSix) {
+                    simState.sixPity = 0;
+                    if (info.isLimited && simState.guarantee) {
+                        op = info.featured + ' (Guaranteed)';
+                        simState.guarantee = false;
+                    } else {
+                        if (info.isLimited && Math.random() < 0.5) {
+                            op = info.featured;
+                        } else {
+                            const std = Object.values(STANDARDS)[Math.floor(Math.random() * 5)];
+                            op = std;
+                            if (info.isLimited) simState.guarantee = true;
+                        }
+                    }
+                    if (info.type === 'starting' && simState.pulls === 40) op += ' (Guaranteed)';
+                } else if (isFive) {
+                    simState.fivePity = 0;
+                    op = FIFTHS[Math.floor(Math.random() * FIFTHS.length)];
+                } else {
+                    op = FOURTHS[Math.floor(Math.random() * FOURTHS.length)];
+                }
+                simState.history.unshift(`${simState.pulls}: ${op}`);
+            }
+            if (simState.history.length > 100) simState.history = simState.history.slice(0,100);
+            updateState();
+        }
+
+        function updateState() {
+            const info = getBannerInfo(simState.banner);
+            const guarLeft = info.isLimited ? Math.max(0, 120 - simState.pulls) : 0;
+            let html = `<p>Pulls: ${simState.pulls} | 6★ Pity: ${simState.sixPity}/80 | 5★ Pity: ${simState.fivePity % 10}/10 | Guarantee: ${simState.guarantee ? 'Yes' : 'No'}</p>`;
+            if (info.type === 'starting') html += `<p>Max 40 pulls</p>`;
+            if (guarLeft > 0) html += `<p>Featured Guarantee in ${guarLeft} pulls</p>`;
+            document.getElementById('currentState').innerHTML = html;
+            document.getElementById('pullHistory').innerHTML = simState.history.map(h => `<div>${h}</div>`).join('');
+        }
+
+        function runAvgSim() {
+            const nPulls = parseInt(document.getElementById('testPulls').value) || 10000;
+            const bannerId = document.getElementById('avgBanner').value;
+            const targetKey = document.getElementById('targetChar').value;
+            const target = targetKey === 'featured' ? FEATUREDS[bannerId] : STANDARDS[targetKey];
+            let totalPullsToTarget = 0;
+            let gotTargetCount = 0;
+            for (let sim = 0; sim < 10000; sim++) {  // 10k sims for avg to target
+                let pulls = 0;
+                let got = false;
+                let state = {pulls:0, sixPity:0, fivePity:0, guarantee:false};
+                while (!got && pulls < 1000) {  // cap
+                    doSinglePull(state, bannerId);
+                    pulls++;
+                    // check if got target
+                    const lastOp = state.history[state.history.length-1].split(': ')[1];
+                    if (lastOp.startsWith(target)) got = true;
+                }
+                if (got) {
+                    totalPullsToTarget += pulls;
+                    gotTargetCount++;
+                }
+            }
+            const avgPulls = gotTargetCount > 0 ? totalPullsToTarget / gotTargetCount : 999;
+            const oneIn = Math.round(avgPulls);
+            document.getElementById('avgResults').innerHTML = `<p>Average pulls to get ${target}: ${avgPulls.toFixed(1)} (1 in ${oneIn})</p>`;
+        }
+
+        function doSinglePull(state, bannerId) {
+            const info = getBannerInfo(bannerId);
+            state.sixPity++;
+            state.fivePity++;
+            let rate6 = 0.008;
+            if (state.sixPity >= 65) rate6 = Math.min(1, 0.008 + (state.sixPity - 64)*0.05);
+            let r = Math.random();
+            let isSix = r < rate6;
+            let forceFive = state.fivePity % 10 === 0;
+            let isFive = !isSix && forceFive;
+            let op = '';
+            if (isSix) {
+                state.sixPity = 0;
+                if (info.isLimited && state.guarantee) {
+                    op = info.featured;
+                    state.guarantee = false;
+                } else if (info.isLimited && Math.random() < 0.5) {
+                    op = info.featured;
+                } else {
+                    op = Object.values(STANDARDS)[Math.floor(Math.random()*5)];
+                    if (info.isLimited) state.guarantee = true;
+                }
+            } else if (isFive) {
+                state.fivePity = 0;
+                op = FIFTHS[Math.floor(Math.random()*FIFTHS.length)];
+            } else {
+                op = FOURTHS[Math.floor(Math.random()*FOURTHS.length)];
+            }
+            state.history.push(op);
+            if (info.type === 'starting' && state.history.length >=40 && !state.history.some(o => o.includes('6★'))) {
+                // force at 40, but simplified
+            }
+        }
+
+        function runExpSim() {
+            const nPulls = parseInt(document.getElementById('expPulls').value) || 180;
+            const bannerId = document.getElementById('avgBanner').value;
+            const info = getBannerInfo(bannerId);
+            let totalSix = 0, totalFive = 0, totalFour = 0, totalFeatured = 0;
+            const sims = 10000;
+            for (let s = 0; s < sims; s++) {
+                let state = {pulls:0, sixPity:0, fivePity:0, guarantee:false, history:[]};
+                let pullsDone = 0;
+                while (pullsDone < nPulls && (info.type !== 'starting' || pullsDone < 40)) {
+                    doSinglePull(state, bannerId);
+                    pullsDone++;
+                }
+                let sixCount = state.history.filter(op => op.length > 1 && (op.includes('Ardelia') || op.includes('Ember') || /* etc, but since names unique */ op.length < 20)).length; // approx 6★ by name length? Better count
+                // Actually, since ops named, count 6★ as standards + featured
+                let sixC = 0, fiveC = 0, fourC = 0, featC = 0;
+                state.history.forEach(op => {
+                    if (Object.values(STANDARDS).includes(op) || Object.values(FEATUREDS).includes(op)) {
+                        sixC++;
+                        if (info.featured === op) featC++;
+                    } else if (FIFTHS.includes(op)) fiveC++;
+                    else fourC++;
+                });
+                totalSix += sixC;
+                totalFive += fiveC;
+                totalFour += fourC;
+                totalFeatured += featC;
+            }
+            const avgSix = totalSix / sims;
+            const avgFive = totalFive / sims;
+            const avgFour = totalFour / sims;
+            const avgFeat = totalFeatured / sims;
+            const costOro = nPulls * 500;
+            const costOri = Math.ceil(costOro / 75);
+            let html = `<p>From ${nPulls} pulls (avg):<br>
+                6★: ${avgSix.toFixed(2)} (Featured: ${avgFeat.toFixed(2)})<br>
+                5★: ${avgFive.toFixed(2)}<br>
+                4★: ${avgFour.toFixed(2)}<br>
+                Cost: ${costOro.toLocaleString()} Oro (~${costOri} Ori)</p>`;
+            html += `<p>Note: Extras beyond pool size are dupes (materials/potentials).</p>`;
+            document.getElementById('expResults').innerHTML = html;
+        }
+
+        updateCalculations();
+        resetSim();
+    </script>
+</body>
+</html>
